@@ -5,6 +5,8 @@ use axum_macros::debug_handler;
 use bcrypt::{hash, verify, DEFAULT_COST};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use tower_http::cors::{Any, CorsLayer};
+use tracing::{error, info};
 use uuid::Uuid;
 
 async fn register_user(pool: &PgPool, name: &str, password: &str) -> Result<(), sqlx::Error> {
@@ -23,6 +25,7 @@ async fn register_user(pool: &PgPool, name: &str, password: &str) -> Result<(), 
     .execute(pool)
     .await?;
 
+    info!("New user registered: name={}, id={}", name, user_id);
     Ok(())
 }
 
@@ -49,15 +52,20 @@ async fn authenticate_user(
         Some(row) => {
             let stored_password = row.password;
             if verify(password, &stored_password).unwrap_or(false) {
+                info!("User authenticated: name={}", name);
                 Ok(Some(DBAuthenticatedUser {
                     user_id: row.user_id,
                     id: row.id,
                 }))
             } else {
+                info!("Authentication failed for user: name={}", name);
                 Ok(None)
             }
         }
-        None => Ok(None),
+        None => {
+            info!("User not found: name={}", name);
+            Ok(None)
+        }
     }
 }
 
@@ -99,18 +107,24 @@ async fn register(
                 .await
                 .unwrap()
                 .unwrap();
+            info!("Registration successful: name={}, id={}", name, user.id);
             Ok(Json(UserRegisterResponse {
                 success: true,
                 user_id: user.user_id,
                 id: user.id,
             }))
         }
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Err(e) => {
+            error!("Registration failed: name={}, error={}", name, e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
     }
 }
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt::init();
+
     let pool = PgPool::connect("postgres://postgres:postgres@localhost/postgres")
         .await
         .unwrap();
@@ -119,11 +133,19 @@ async fn main() {
         pool: Arc::new(pool),
     };
 
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
     let router = Router::new()
         .route("/register", post(register))
-        .with_state(app_state);
+        .with_state(app_state)
+        .layer(cors);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
+    info!("Server listening on {}", addr);
+
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, router).await.unwrap();
 }
