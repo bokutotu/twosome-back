@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{fs, net::SocketAddr, path::Path, sync::Arc};
 
 use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
 use axum_macros::debug_handler;
@@ -9,76 +9,83 @@ use tower_http::cors::{Any, CorsLayer};
 use tracing::{error, info};
 use uuid::Uuid;
 
-async fn register_user(
-    pool: &PgPool,
-    name: &str,
-    password: &str,
-    user_id: &str,
-) -> Result<(), sqlx::Error> {
-    let hashed_password = hash(password, DEFAULT_COST).unwrap();
-    let id = Uuid::new_v4();
-
-    sqlx::query!(
-        r#"
-        INSERT INTO users (id, name, password, user_id)
-        VALUES ($1, $2, $3, $4)
-        "#,
-        id,
-        name,
-        hashed_password,
-        user_id
-    )
-    .execute(pool)
-    .await?;
-
-    info!(
-        "New user registered: name={}, id={}, user_id={}",
-        name, id, user_id
-    );
-    Ok(())
-}
-
-struct DBAuthenticatedUser {
-    user_id: String,
+#[derive(Debug, Clone)]
+struct User {
     id: Uuid,
     name: String,
+    user_id: String,
+}
+impl User {
+    async fn register(pool: &PgPool, request: &UserRegisterRequest) -> Result<Self, sqlx::Error> {
+        let hashed_password =
+            hash(&request.password, DEFAULT_COST).map_err(|_| sqlx::Error::PoolTimedOut)?;
+        let id = Uuid::new_v4();
+
+        sqlx::query!(
+            r#"
+            INSERT INTO users (id, name, password, user_id)
+            VALUES ($1, $2, $3, $4)
+            "#,
+            id,
+            request.name,
+            hashed_password,
+            request.user_id
+        )
+        .execute(pool)
+        .await?;
+
+        info!(
+            "New user registered: name={}, id={}, user_id={}",
+            request.name, id, request.user_id
+        );
+
+        Ok(User {
+            id,
+            name: request.name.to_string(),
+            user_id: request.user_id.to_string(),
+        })
+    }
 }
 
-async fn authenticate_user(
-    pool: &PgPool,
-    user_id: &str,
-    password: &str,
-) -> Result<Option<DBAuthenticatedUser>, sqlx::Error> {
-    let result = sqlx::query!(
-        r#"
-        SELECT id, user_id, name, password FROM users WHERE user_id = $1
-        "#,
-        user_id
-    )
-    .fetch_optional(pool)
-    .await?;
+impl User {
+    async fn authenticate(
+        pool: &PgPool,
+        request: &UserLoginRequest,
+    ) -> Result<Option<Self>, sqlx::Error> {
+        let result = sqlx::query!(
+            r#"
+            SELECT id, user_id, name, password FROM users WHERE user_id = $1
+            "#,
+            request.user_id
+        )
+        .fetch_optional(pool)
+        .await?;
 
-    match result {
-        Some(row) => {
-            let stored_password = row.password;
-            if verify(password, &stored_password).unwrap_or(false) {
-                info!(
-                    "User authenticated: user_id={} id={} name={}",
-                    row.user_id, row.id, row.name
-                );
-                Ok(Some(DBAuthenticatedUser {
-                    user_id: row.user_id,
-                    id: row.id,
-                    name: row.name,
-                }))
-            } else {
-                info!("Authentication failed for user: user_id={}", user_id);
+        match result {
+            Some(row) => {
+                let stored_password = row.password;
+                if verify(&request.password, &stored_password).unwrap_or(false) {
+                    info!(
+                        "User authenticated: user_id={} id={} name={}",
+                        row.user_id, row.id, row.name
+                    );
+                    Ok(Some(User {
+                        id: row.id,
+                        name: row.name,
+                        user_id: row.user_id,
+                    }))
+                } else {
+                    info!(
+                        "Authentication failed for user: user_id={}",
+                        request.user_id
+                    );
+                    Ok(None)
+                }
+            }
+            None => {
+                info!("User not found: user_id={}", request.user_id);
                 Ok(None)
             }
-        }
-        None => {
-            info!("User not found: user_id={}", user_id);
-            Ok(None)
         }
     }
 }
@@ -100,27 +107,27 @@ struct UserRegisterResponse {
     id: Uuid,
 }
 
+impl From<User> for UserRegisterResponse {
+    fn from(user: User) -> Self {
+        UserRegisterResponse { id: user.id }
+    }
+}
+
 #[debug_handler]
 async fn register(
     State(state): State<AppState>,
-    Json(request): axum::Json<UserRegisterRequest>,
+    Json(request): Json<UserRegisterRequest>,
 ) -> Result<Json<UserRegisterResponse>, StatusCode> {
-    let name = request.name.clone();
-    let password = request.password.clone();
-    let user_id = request.user_id.clone();
-
-    match dbg!(register_user(&state.pool, &name, &password, &user_id).await) {
-        Ok(_) => {
-            println!("here");
-            let user = authenticate_user(&state.pool, &user_id, &password)
-                .await
-                .unwrap()
-                .unwrap();
-            info!("Registration successful: name={}, id={}", name, user.id);
-            Ok(Json(UserRegisterResponse { id: user.id }))
+    match User::register(&state.pool, &request).await {
+        Ok(user) => {
+            info!("Registration successful: id={}", user.id);
+            Ok(Json(user.into()))
         }
         Err(e) => {
-            error!("Registration failed: name={}, error={}", name, e);
+            error!(
+                "Registration failed: user_id={}, error={}",
+                request.user_id, e
+            );
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
@@ -139,40 +146,63 @@ struct UserLoginResponse {
     user_id: String,
 }
 
+impl From<User> for UserLoginResponse {
+    fn from(user: User) -> Self {
+        UserLoginResponse {
+            id: user.id,
+            name: user.name,
+            user_id: user.user_id,
+        }
+    }
+}
+
 #[debug_handler]
 async fn login(
     State(state): State<AppState>,
     Json(request): Json<UserLoginRequest>,
-) -> Result<(StatusCode, Json<UserLoginResponse>), StatusCode> {
-    let user_id = request.user_id;
-    let password = request.password;
-
-    match authenticate_user(&state.pool, &user_id, &password).await {
+) -> Result<Json<UserLoginResponse>, StatusCode> {
+    match User::authenticate(&state.pool, &request).await {
         Ok(Some(user)) => {
             info!("Login successful: user_id={}", user.user_id);
-            Ok((
-                StatusCode::OK,
-                Json(UserLoginResponse {
-                    id: user.id,
-                    name: user.name,
-                    user_id: user.user_id,
-                }),
-            ))
+            Ok(Json(user.into()))
         }
         Ok(None) => {
-            info!("Login failed: user_id={}", user_id);
+            info!("Login failed: user_id={}", request.user_id);
             Err(StatusCode::UNAUTHORIZED)
         }
         Err(e) => {
-            error!("Login failed: user_id={}, error={}", user_id, e);
+            error!("Login failed: user_id={}, error={}", request.user_id, e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct UserGroupCreateRequest {
+    name: String,
+    user_id_1: Uuid,
+    user_id_2: Uuid,
+}
+
+#[derive(Debug, Serialize)]
+struct UserGroupCreateResponse {
+    id: Uuid,
+}
+
+fn init_save_dir(path: &str) -> Result<(), std::io::Error> {
+    if !Path::new(path).exists() {
+        info!("Creating directory: {}", path);
+        fs::create_dir_all(path)?;
+    }
+    info!("Directory exists: {}", path);
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
+
+    init_save_dir("uploads").unwrap();
 
     let pool = PgPool::connect("postgres://postgres:postgres@localhost/postgres")
         .await
@@ -188,6 +218,8 @@ async fn main() {
         .allow_headers(Any);
 
     let router = Router::new()
+        // health check
+        .route("/boku2zenu_king_of_kyodo", post(|| async { "OK" }))
         .route("/register", post(register))
         .route("/login", post(login))
         .with_state(app_state)
