@@ -97,8 +97,6 @@ struct UserRegisterRequest {
 
 #[derive(Debug, Serialize)]
 struct UserRegisterResponse {
-    success: bool,
-    user_id: String,
     id: Uuid,
 }
 
@@ -111,18 +109,15 @@ async fn register(
     let password = request.password.clone();
     let user_id = request.user_id.clone();
 
-    match register_user(&state.pool, &name, &password, &user_id).await {
+    match dbg!(register_user(&state.pool, &name, &password, &user_id).await) {
         Ok(_) => {
-            let user = authenticate_user(&state.pool, &name, &password)
+            println!("here");
+            let user = authenticate_user(&state.pool, &user_id, &password)
                 .await
                 .unwrap()
                 .unwrap();
             info!("Registration successful: name={}, id={}", name, user.id);
-            Ok(Json(UserRegisterResponse {
-                success: true,
-                user_id: user.user_id,
-                id: user.id,
-            }))
+            Ok(Json(UserRegisterResponse { id: user.id }))
         }
         Err(e) => {
             error!("Registration failed: name={}, error={}", name, e);
@@ -133,7 +128,6 @@ async fn register(
 
 #[derive(Debug, Deserialize)]
 struct UserLoginRequest {
-    name: String,
     user_id: String,
     password: String,
 }
@@ -141,6 +135,8 @@ struct UserLoginRequest {
 #[derive(Debug, Serialize)]
 struct UserLoginResponse {
     id: Uuid,
+    name: String,
+    user_id: String,
 }
 
 #[debug_handler]
@@ -148,21 +144,27 @@ async fn login(
     State(state): State<AppState>,
     Json(request): Json<UserLoginRequest>,
 ) -> Result<(StatusCode, Json<UserLoginResponse>), StatusCode> {
-    let name = request.name;
     let user_id = request.user_id;
     let password = request.password;
 
     match authenticate_user(&state.pool, &user_id, &password).await {
         Ok(Some(user)) => {
-            info!("Login successful: name={}, id={}", name, user.id);
-            Ok((StatusCode::OK, Json(UserLoginResponse { id: user.id })))
+            info!("Login successful: user_id={}", user.user_id);
+            Ok((
+                StatusCode::OK,
+                Json(UserLoginResponse {
+                    id: user.id,
+                    name: user.name,
+                    user_id: user.user_id,
+                }),
+            ))
         }
         Ok(None) => {
-            info!("Login failed: name={}", name);
+            info!("Login failed: user_id={}", user_id);
             Err(StatusCode::UNAUTHORIZED)
         }
         Err(e) => {
-            error!("Login failed: name={}, error={}", name, e);
+            error!("Login failed: user_id={}, error={}", user_id, e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
@@ -191,7 +193,7 @@ async fn main() {
         .with_state(app_state)
         .layer(cors);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
+    let addr = SocketAddr::from(([0, 0, 0, 0], 1234));
     info!("Server listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
