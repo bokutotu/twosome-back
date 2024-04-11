@@ -3,7 +3,41 @@ use sqlx::PgPool;
 use tracing::info;
 use uuid::Uuid;
 
-use super::group::GroupId;
+use crate::entity::{user::User, Id};
+
+pub async fn get_user_by_id(pool: &PgPool, id: Id<User>) -> Result<UserDB, sqlx::Error> {
+    let result = sqlx::query!(
+        r#"
+        SELECT id, name, user_id FROM users WHERE id = $1
+        "#,
+        id.get_id()
+    )
+    .fetch_one(pool)
+    .await?;
+
+    Ok(UserDB {
+        id: result.id,
+        name: result.name,
+        user_id: result.user_id,
+    })
+}
+
+pub async fn get_user_by_user_id(pool: &PgPool, user_id: &str) -> Result<UserDB, sqlx::Error> {
+    let result = sqlx::query!(
+        r#"
+        SELECT id, name, user_id FROM users WHERE user_id = $1
+        "#,
+        user_id
+    )
+    .fetch_one(pool)
+    .await?;
+
+    Ok(UserDB {
+        id: result.id,
+        name: result.name,
+        user_id: result.user_id,
+    })
+}
 
 #[derive(Debug, Clone)]
 pub struct UserDB {
@@ -105,40 +139,5 @@ impl UserAuth {
                 Ok(None)
             }
         }
-    }
-}
-
-pub struct UserId(pub Uuid);
-impl UserId {
-    pub async fn get_user_db(&self, pool: &PgPool) -> Result<UserDB, sqlx::Error> {
-        let result = sqlx::query!(
-            r#"
-            SELECT id, name, user_id FROM users WHERE id = $1
-            "#,
-            self.0
-        )
-        .fetch_one(pool)
-        .await?;
-
-        Ok(UserDB {
-            id: result.id,
-            name: result.name,
-            user_id: result.user_id,
-        })
-    }
-    pub async fn get_group_ids(&self, pool: &PgPool) -> Result<Vec<GroupId>, sqlx::Error> {
-        let result = sqlx::query!(
-            r#"
-            SELECT group_id FROM user_groups WHERE user_id = $1
-            "#,
-            self.0
-        )
-        .fetch_all(pool)
-        .await?;
-
-        Ok(result
-            .iter()
-            .map(|row| GroupId::new(row.group_id))
-            .collect())
     }
 }

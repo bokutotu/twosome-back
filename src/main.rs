@@ -1,5 +1,6 @@
 pub mod controllers;
 pub mod db;
+pub mod entity;
 
 use std::{fs, net::SocketAddr, path::Path, sync::Arc};
 

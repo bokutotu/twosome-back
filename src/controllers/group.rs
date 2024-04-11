@@ -1,14 +1,16 @@
 use axum::{extract::State, http::StatusCode, Json};
 use axum_macros::debug_handler;
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
 use tracing::error;
 use uuid::Uuid;
 
 use crate::{
-    db::{
-        group::{GroupCreate, GroupId},
-        user::{UserDB, UserId},
+    db::group::{remove_group_by_group_id, GroupCreate},
+    entity::{
+        group_with_user_info::{get_group_with_user_info_by_group_id, GroupWithUserInfo},
+        user::User,
+        user_group::get_user_group_by_user_id_entity,
+        Id,
     },
     AppState, UserGroup,
 };
@@ -33,22 +35,24 @@ pub async fn create_group(
         }
     };
 
-    let user_group = UserGroup::new(request.user_id, group_id.uuid());
+    let user_group = UserGroup::new(request.user_id, group_id.get_id());
     match user_group.insert(&state.pool).await {
         Ok(_) => (),
         Err(e) => {
             error!(
                 "Failed to create user_group: user_id={}, group_id={}, error={}",
                 request.user_id,
-                group_id.uuid(),
+                group_id.get_id(),
                 e
             );
-            group_id.remove(&state.pool).await.unwrap();
+            remove_group_by_group_id(&state.pool, group_id)
+                .await
+                .unwrap();
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
 
-    Ok(Json(group_id.uuid()))
+    Ok(Json(group_id.get_id()))
 }
 #[derive(Debug, Deserialize)]
 pub struct UserGroupGetRequest {
@@ -60,36 +64,33 @@ pub struct GetUserGroupResponse {
     name: String,
     users: Vec<UserInfo>,
 }
-#[derive(Debug, Serialize)]
-struct UserInfo {
-    name: String,
-    user_id: Uuid,
-}
-impl From<UserDB> for UserInfo {
-    fn from(user: UserDB) -> Self {
-        UserInfo {
-            name: user.name().to_string(),
-            user_id: user.id(),
+impl From<&GroupWithUserInfo> for GetUserGroupResponse {
+    fn from(value: &GroupWithUserInfo) -> Self {
+        let group_id = value.get_group().get_id().get_id();
+        let name = value.get_group().get_name().to_string();
+        let belogn_users = value.get_belongs_users();
+        let users = belogn_users.into_iter().map(UserInfo::from).collect();
+        GetUserGroupResponse {
+            group_id,
+            name,
+            users,
         }
     }
 }
-
-async fn convert_group_id_to_response(
-    group_id: &GroupId,
-    pool: &PgPool,
-) -> Result<GetUserGroupResponse, sqlx::Error> {
-    let group = group_id.get(pool).await?;
-    let user_ids = group_id.get_belong_user_ids(pool).await?;
-    let mut users = Vec::new();
-    for user_id in user_ids {
-        let user = user_id.get_user_db(pool).await?;
-        users.push(user);
+#[derive(Debug, Serialize)]
+struct UserInfo {
+    name: String,
+    user_id: String,
+    id: Uuid,
+}
+impl From<&User> for UserInfo {
+    fn from(user: &User) -> Self {
+        UserInfo {
+            name: user.get_name().to_string(),
+            user_id: user.get_user_id().to_string(),
+            id: user.get_id(),
+        }
     }
-    Ok(GetUserGroupResponse {
-        group_id: group_id.uuid(),
-        name: group.name().to_string(),
-        users: users.into_iter().map(UserInfo::from).collect(),
-    })
 }
 
 #[debug_handler]
@@ -97,31 +98,34 @@ pub async fn get_groups(
     State(state): State<AppState>,
     Json(request): Json<UserGroupGetRequest>,
 ) -> Result<Json<Vec<GetUserGroupResponse>>, StatusCode> {
-    let group_ids = UserId(request.user_id.clone())
-        .get_group_ids(&state.pool)
+    let user_groups = get_user_group_by_user_id_entity(&state, Id::<User>::new(request.user_id))
         .await
         .map_err(|e| {
             error!(
-                "Failed to get group_ids: user_id={}, error={}",
+                "Failed to get user_group: user_id={}, error={}",
                 request.user_id, e
             );
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-    let mut groups = Vec::new();
-    for group_id in group_ids {
-        match convert_group_id_to_response(&group_id, &state.pool).await {
-            Ok(group) => groups.push(group),
-            Err(e) => {
-                error!(
-                    "Failed to convert group_id to response: group_id={}, error={}",
-                    group_id.uuid(),
-                    e
-                );
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            }
-        }
+    if user_groups.is_empty() {
+        return Ok(Json(vec![]));
     }
-    Ok(Json(groups))
+    let mut result = Vec::new();
+    for user_group in user_groups {
+        let group_with_user_info =
+            get_group_with_user_info_by_group_id(&state, user_group.group_id())
+                .await
+                .map_err(|e| {
+                    error!(
+                        "Failed to get group_with_user_info: group_id={:?}, error={}",
+                        user_group.group_id(),
+                        e
+                    );
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
+        result.push(GetUserGroupResponse::from(&group_with_user_info))
+    }
+    Ok(Json(result))
 }
 
 #[derive(Debug, Deserialize)]
