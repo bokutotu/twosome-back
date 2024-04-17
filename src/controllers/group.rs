@@ -9,10 +9,10 @@ use crate::{
     entity::{
         group_with_user_info::{get_group_with_user_info_by_group_id, GroupWithUserInfo},
         user::User,
-        user_group::get_user_group_by_user_id_entity,
+        user_group::{create_user_group, get_user_group_by_user_id_entity, UserGroup},
         Id,
     },
-    AppState, UserGroup,
+    AppState,
 };
 
 #[derive(Debug, Deserialize)]
@@ -35,8 +35,8 @@ pub async fn create_group(
         }
     };
 
-    let user_group = UserGroup::new(request.user_id, group_id.get_id());
-    match user_group.insert(&state.pool).await {
+    let user_group = UserGroup::new(Id::new(request.user_id), Id::new(group_id.get_id()));
+    match create_user_group(&state, user_group).await {
         Ok(_) => (),
         Err(e) => {
             error!(
@@ -139,8 +139,8 @@ pub async fn add_group_user(
     State(state): State<AppState>,
     Json(request): Json<AddGroupUserRequest>,
 ) -> StatusCode {
-    let user_group = UserGroup::new(request.user_id, request.group_id);
-    match user_group.insert(&state.pool).await {
+    let user_group = UserGroup::new(Id::new(request.user_id), Id::new(request.group_id));
+    match create_user_group(&state, user_group).await {
         Ok(_) => StatusCode::OK,
         Err(e) => {
             error!(

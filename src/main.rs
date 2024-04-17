@@ -8,7 +8,6 @@ use axum::{routing::post, Router};
 use sqlx::PgPool;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
-use uuid::Uuid;
 
 use crate::controllers::group::{create_group, get_groups};
 use crate::controllers::user::{login, register};
@@ -25,31 +24,6 @@ fn init_save_dir(path: &str) -> Result<(), std::io::Error> {
     }
     info!("Directory exists: {}", path);
     Ok(())
-}
-
-pub struct UserGroup {
-    user_id: Uuid,
-    group_id: Uuid,
-}
-impl UserGroup {
-    pub fn new(user_id: Uuid, group_id: Uuid) -> Self {
-        UserGroup { user_id, group_id }
-    }
-
-    pub async fn insert(&self, pool: &PgPool) -> Result<(), sqlx::Error> {
-        sqlx::query!(
-            r#"
-            INSERT INTO user_groups (user_id, group_id)
-            VALUES ($1, $2)
-            "#,
-            self.user_id,
-            self.group_id
-        )
-        .execute(pool)
-        .await?;
-
-        Ok(())
-    }
 }
 
 #[tokio::main]

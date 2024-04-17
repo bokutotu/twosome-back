@@ -1,5 +1,7 @@
 use crate::{
-    db::user_group::{get_user_group_by_group_id_db, get_user_group_by_user_id_db},
+    db::user_group::{
+        create_user_group_db, get_user_group_by_group_id_db, get_user_group_by_user_id_db,
+    },
     AppState,
 };
 
@@ -41,4 +43,8 @@ pub async fn get_user_group_by_group_id_entity(
     let result = get_user_group_by_group_id_db(&app.pool, group_id).await?;
 
     Ok(result.into_iter().map(UserGroup::from).collect())
+}
+
+pub async fn create_user_group(app: &AppState, user_group: UserGroup) -> Result<(), sqlx::Error> {
+    create_user_group_db(&app.pool, user_group).await
 }

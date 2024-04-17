@@ -78,3 +78,18 @@ pub async fn get_user_group_by_user_id_db(
         })
         .collect())
 }
+
+pub async fn create_user_group_db(pool: &PgPool, user_group: UserGroup) -> Result<(), sqlx::Error> {
+    let user_group_db: UserGroupDB = user_group.into();
+    sqlx::query!(
+        r#"
+        INSERT INTO user_groups (user_id, group_id) VALUES ($1, $2)
+        "#,
+        user_group_db.user_id,
+        user_group_db.group_id
+    )
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
